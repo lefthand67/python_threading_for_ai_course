@@ -312,16 +312,10 @@
               "url": "https://www.youtube.com/watch?v=oq29KUy29iQ",
               "type": "video",
               "topic": "C mutex concept reinforcement"
-            },
+            }
             {
-              "title": "Article: 'Debugging Deadlocks in Python' (Real Python)",
-              "url": "https://realpython.com/python-debugging-pdb/",
-              "type": "article",
-              "topic": "Deadlock debugging techniques"
-            },
-            {
-              "title": "Video: 'Debugging with GDB - StackTraces and Threads' (The Linux Foundation)",
-              "url": "https://www.youtube.com/watch?v=MCjZfAiexYU",
+              "title": "Video: 'Advanced Python Debugging Techniques Using GDB'",
+              "url": "https://www.youtube.com/watch?v=rB9rPdMRxIA",
               "type": "video",
               "topic": "GDB for thread analysis"
             }
