@@ -244,7 +244,9 @@ void* print_letters(void* arg)
 
 We need to introduce more chaos. We'll remove the artificial synchronization of `sleep` and make the threads do *real, variable-length work* that the scheduler can't predict.
 
-Here is a modified version of the C program. Let's call it `concurrent_chaos.c`.
+Here is a modified version of the C program. Let's call it `concurrent_chaos.c`:
+
+> Note: We use a floating-point multiplication `x = x * 1.01;` to force the CPU to perform a series of non-trivial, repeated FPU operations, effectively ensuring it's a CPU-bound task that takes a measurable and variable amount of time.
 
 ```c
 #include <pthread.h>
@@ -550,7 +552,7 @@ What happens if Core 2 reads the *same* counter at the same time? It gets the *o
 
 **This is a Data Race.** It's not just a software bug; it's a direct consequence of the hardware memory architecture.
 
-The solution? The hardware provides instructions for **cache coherency** and **atomic operations**. A **Lock** in Python, built on a **mutex** (an OS primitive), ultimately relies on these low-level CPU instructions to ensure only one core can execute a read-modify-write sequence at a time.
+The solution? The CPU and OS work together. The hardware implements a **cache coherency** protocol (like MESI) and provides instructions for **atomic operations**. A **Lock** in Python, built on a **mutex** (an OS primitive), ultimately relies on these low-level CPU instructions to enforce memory synchronization and ensure only one core can execute a critical read-modify-write sequence at a time.
 
 So, a Python thread is not an abstraction. It is a **software-managed handle for a hardware thread of execution**. When you create a Python thread, you are asking the OS to schedule a hardware state (registers, RIP) onto a physical CPU core. The chaos you observed in our C and Python experiments is the visible outcome of this hardware scheduling and cache behavior.
 
@@ -560,7 +562,72 @@ The process can consist of many threads, and this is the core of modern computin
 
 A **process** is an **allocation of resources**. A **thread** is a **stream of execution**.
 
-Think of it like a construction company:
+So, any code that is *executing* on the machine is running within a process. A process is the operating system's unit of resource allocation.
+
+Think of a process as a **container**. This container holds:
+
+1.  **An Address Space:** The defined region of memory that the process can access (its code, data, heap, and stack segments).
+2.  **Resources:** File descriptors, network connections, environment variables, and security attributes.
+3.  **At Least One Thread of Execution:** This is the crucial part. The thread is the entity within the process that the CPU actually schedules and runs.
+
+So, to refine the statement: "Any code running on the machine is being executed by a thread, and that thread always belongs to a process."
+
+A simple, single-threaded program, like a "Hello, World" in C, is one process containing one thread. A multi-threaded program, like the data race example (see below), is one process containing multiple threads, all sharing the same address space and resources.
+
+Here is a Mermaid diagram to visualize this container relationship, which is central to all modern operating systems.
+
+```mermaid
+---
+config:
+  look: handDrawn
+  theme: redux
+  layout: elk
+---
+flowchart TD
+ subgraph subGraph0["Process A: Multi-Threaded (Shared Memory Domain)"]
+    direction TB
+        A1["Thread 1<br>(Schedulable Unit)"]
+        A2["Thread 2<br>(Schedulable Unit)"]
+        R_Shared["SHARED RESOURCES:<br>Heap, Code, File Descriptors"]
+  end
+ subgraph subGraph1["Process B: Single-Threaded (Isolated Memory Domain)"]
+    direction TB
+        B1["Thread 1<br>(Schedulable Unit)"]
+        R_Private["PRIVATE RESOURCES:<br>Heap, Code, File Descriptors"]
+  end
+ subgraph subGraph2["OS Scheduler/Kernel"]
+    direction RL
+        CPU["Physical CPU Core"]
+  end
+    A1 -- R/W --> R_Shared
+    A2 -- R/W --> R_Shared
+    B1 -- R/W --> R_Private
+    A1 -. Schedules to .-> CPU
+    A2 -. Schedules to .-> CPU
+    B1 -. Schedules to .-> CPU
+     A1:::thread
+     A2:::thread
+     R_Shared:::resource
+     B1:::thread
+     R_Private:::resource
+     CPU:::cpu
+     subGraph0:::process_node
+     subGraph1:::process_node
+     subGraph2:::os_scheduler
+    classDef process_node fill:#ffaaaa, stroke:#cc0000, stroke-width:2px
+    classDef thread fill:#ffffcc, stroke:#ffcc00
+    classDef resource fill:#cceeff, stroke:#0066cc
+    classDef cpu fill:#ffcccc, stroke:#ff0000
+    classDef os_scheduler fill:#d3e9d3, stroke:#38761D
+```
+
+This diagram shows two key ideas:
+1.  **Process as a Container:** Process A has multiple threads sharing one set of resources. Process B has one thread with its own private set.
+2.  **Isolation:** The memory and resources of Process A are completely isolated from those of Process B. A thread in Process A cannot directly access the memory of Process B without going through an Inter-Process Communication (IPC) mechanism provided by the OS.
+
+### Factory example
+
+Think of a processor-thread system like a construction company:
 
 *   **The Process is the Company's Job Site.**
     *   It has a defined **plot of land** (its Memory Address Space). This is the "40-acre field" where it's allowed to build. No other job site can build on this land.
@@ -786,7 +853,7 @@ And here is how the Python `threading` API maps to this lifecycle:
 
 Two critical, production-relevant details:
 
-1.  **The "Zombie" State (Terminated):** When a thread's `target` function returns, the thread enters a "Terminated" or "Zombie" state. It is no longer schedulable and its execution has ceased, but its resources (like its thread control block and return value) are still held by the OS/Interpreter until someone acknowledges its death. This is a crucial detail for resource management.
+**1. The "Zombie" State (Terminated):** When a thread's `target` function returns or raises an unhandled exception, the thread enters a "Terminated" state (often called a **Zombie** state, mirroring the concept from processes). Its execution has ceased, but its control data — specifically the **Thread Control Block (TCB)** and the thread's exit status/return value — are still held by the Operating System or Interpreter. The thread is not truly de-allocated until a successful call to **`thread.join()`** occurs. The `join()` call's primary function is to **harvest** this exit status and **free the TCB resources**, which is a crucial detail for preventing **resource leaks** in long-running programs that spawn many short-lived threads. Failing to explicitly join a thread means its resource block is held indefinitely until the process exits, which can lead to system resource exhaustion (known as a **resource leak**) in long-running applications that spawn many short-lived threads.
 
 2.  **The "Wait Queue":** The `t.join()` call does not simply make the main thread "sleep." It places the main thread on a specific **wait queue** for that terminating thread. When the target thread finally dies, the OS/Interpreter explicitly wakes up *all threads* that are waiting in that queue. This is a much more accurate description of the synchronization mechanism.
 
@@ -1123,3 +1190,13 @@ Let's consolidate what we *have* concretely accomplished in this session:
 These are not small things. You have moved from abstract theory to practical, demonstrable implementation of the most critical concurrency concepts.
 
 We will proceed at a pace you are comfortable with. The next session will focus on deepening this understanding with more practice and exploring the trade-offs we've just begun to touch upon.
+
+# <b>Reading</b>
+
+1.  **Python `threading` Module Documentation:** The official docs are the definitive source. Pay close attention to the `Lock` and `RLock` objects. [https://docs.python.org/3/library/threading.html](https://docs.python.org/3/library/threading.html)
+
+2.  **Article: "Python Threading Synchronization Locks" (Real Python):** A practical, in-depth tutorial that expands on what we covered, with clear examples. [https://realpython.com/intro-to-python-threading/#using-locks-for-synchronization](https://realpython.com/intro-to-python-threading/#using-locks-for-synchronization)
+
+3.  **Book: "The Linux Programming Interface" by Michael Kerrisk:** While not Python-specific, Chapter 29-33 provide the ultimate deep dive into Pthreads and synchronization primitives at the OS level. This will cement the hardware/OS model we discussed.
+
+4.  **Video: "What is a Mutex in C? (pthread_mutex)" by Jacob Sorber:** A short, excellent video explaining the C mutex, which is the direct ancestor of Python's `Lock`. Watching this will reinforce the cross-language concept. [https://www.youtube.com/watch?v=oq29KUy29iQ](https://www.youtube.com/watch?v=oq29KUy29iQ)
